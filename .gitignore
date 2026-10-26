@@ -1,0 +1,11 @@
+.DS_Store
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfplan
+crash.log
+.env
+__pycache__/
+*.zip
+.venv/
