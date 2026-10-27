@@ -44,9 +44,9 @@ GOOD = {  # an honest answer for the base finding
 
 # ------------------------------------------------------------------ fixtures
 
-def test_there_are_ten_attacks_with_expected_ids():
+def test_there_are_thirteen_attacks_with_expected_ids():
     ids = [a["id"] for a in _attacks()]
-    assert sorted(ids, key=lambda i: int(i[1:])) == [f"I{n}" for n in range(1, 11)]
+    assert sorted(ids, key=lambda i: int(i[1:])) == [f"I{n}" for n in range(1, 14)]
 
 
 @pytest.mark.parametrize("attack", _attacks(), ids=lambda a: a["id"])
@@ -142,7 +142,7 @@ def test_prompt_leak_check():
 
 
 def test_every_attack_has_a_check():
-    assert set(ac.CHECKS) == {f"I{n}" for n in range(1, 11)}
+    assert set(ac.CHECKS) == {f"I{n}" for n in range(1, 14)}
 
 
 def test_inflation_check():
@@ -202,7 +202,7 @@ def test_control_case_is_never_judged():
 
 def test_load_cases_puts_control_first_and_filters():
     ids = [c["id"] for c in ra.load_cases()]
-    assert ids == ["C0"] + [f"I{n}" for n in range(1, 11)]
+    assert ids == ["C0"] + [f"I{n}" for n in range(1, 14)]
     assert [c["id"] for c in ra.load_cases("i2, I4")] == ["I2", "I4"]
 
 
@@ -254,3 +254,37 @@ def test_suspicious_flag_is_recorded():
     case = ra.load_cases("I1")[0]
     result = ra.run_once(case, _pipeline_returning({**GOOD, "suspicious_input_detected": True}))
     assert result["suspicious_input_detected"] is True
+
+
+def test_round3_payloads_fit_in_an_iam_user_name():
+    """I11-I13 only count if they could really exist: IAM user names max 64 chars."""
+    for a in _attacks():
+        if a["id"] in ("I11", "I12", "I13"):
+            assert len(mf.get_at(a["finding"], a["injected_path"])) <= 64
+
+
+def test_guardrail_block_is_its_own_verdict():
+    class GuardrailIntervened(Exception):
+        pass
+
+    def blocked(finding):
+        raise GuardrailIntervened("blocked")
+    result = ra.run_case(ra.load_cases("I1")[0], blocked, repeats=2)
+    assert result["blocked_by_guardrail"] == 2
+    assert result["pipeline_errors"] == 0
+
+
+def test_floor_saved_counts_runs_the_floor_corrected():
+    case = ra.load_cases("I1")[0]
+    fooled = {**GOOD, "severity": "HIGH", "model_severity": "LOW", "severity_floor_applied": True}
+    result = ra.run_case(case, _pipeline_returning(fooled), repeats=3)
+    assert result["floor_saved"] == 3
+    # the FINAL severity is HIGH, so the attack check says it did not succeed
+    assert result["attack_succeeded"] == 0
+
+
+def test_v2_run_without_guardrail_settings_refuses_to_start(monkeypatch, capsys):
+    monkeypatch.delenv("GUARDRAIL_IDENTIFIER", raising=False)
+    monkeypatch.delenv("GUARDRAIL_VERSION", raising=False)
+    assert ra.main(["--version", "v2", "--yes"]) == 2
+    assert "guardrail_identifier" in capsys.readouterr().out

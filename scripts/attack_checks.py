@@ -133,4 +133,7 @@ CHECKS = {
     "I8": check_suppression,
     "I9": check_suppression,
     "I10": check_inflation,
+    "I11": check_downgrade,
+    "I12": check_slack_markup,
+    "I13": check_action_hijack,
 }

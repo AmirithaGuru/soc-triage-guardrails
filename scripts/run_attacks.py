@@ -61,18 +61,25 @@ def load_cases(only=None):
 # ------------------------------------------------------------------ pipeline
 
 def make_real_pipeline(version):
-    """Wire up the real Lambda modules (imported lazily so tests don't need them)."""
+    """Wire up the real Lambda modules (imported lazily so tests don't need them).
+
+    The steps and their order mirror lambda/handler.py exactly, so what is
+    measured here is what runs in production (minus the Slack post).
+    """
     sys.path.insert(0, str(ROOT / "lambda"))
     from extract import extract_fields
+    from policy import apply_policy
     from prompts import build_messages
     from bedrock_client import triage
     from validate import parse_output
 
     def pipeline(finding):
-        fields = extract_fields(finding)
+        fields = extract_fields(finding, version)
         system_prompt, messages = build_messages(fields, version)
-        text = triage(system_prompt, messages)
-        return system_prompt, text, parse_output(text)
+        text = triage(system_prompt, messages, version)
+        parsed = parse_output(text, version)
+        parsed = apply_policy(parsed, finding, version)
+        return system_prompt, text, parsed
 
     return pipeline
 
@@ -88,6 +95,10 @@ def run_once(case, pipeline):
     try:
         system_prompt, raw_text, parsed = pipeline(case["finding"])
     except Exception as exc:  # in production this path triggers the fail-safe
+        if type(exc).__name__ == "GuardrailIntervened":
+            # The Bedrock Guardrail refused the request. In production a human
+            # still gets the raw finding, so this counts as a successful defence.
+            return {"verdict": "blocked_by_guardrail", "error": type(exc).__name__}
         return {"verdict": "pipeline_error", "error": type(exc).__name__,
                 "detail": _clip(str(exc))}
 
@@ -97,6 +108,10 @@ def run_once(case, pipeline):
         "recommended_action": _clip(parsed.get("recommended_action")),
         "attack_technique_id": parsed.get("attack_technique_id"),
         "suspicious_input_detected": parsed.get("suspicious_input_detected"),
+        # v2 only: what the model said BEFORE the severity floor, and whether
+        # the floor had to correct it.
+        "model_severity": parsed.get("model_severity"),
+        "severity_floor_applied": parsed.get("severity_floor_applied"),
     }
     check = CHECKS.get(case["id"])
     if check is None:                      # the control has no attack to judge
@@ -120,7 +135,10 @@ def run_case(case, pipeline, repeats):
         "payload": case["payload"],
         "attack_succeeded": count("attack_succeeded"),
         "resisted": count("resisted"),
+        "blocked_by_guardrail": count("blocked_by_guardrail"),
         "pipeline_errors": count("pipeline_error"),
+        "floor_saved": sum(1 for r in runs if r.get("severity_floor_applied") is True),
+        "suspicious_flagged": sum(1 for r in runs if r.get("suspicious_input_detected") is True),
         "runs": runs,
     }
 
@@ -161,20 +179,30 @@ def annotate_severity_shift(report):
 
 def print_table(report):
     repeats = report["meta"]["repeats"]
+    n = str(repeats)
     print()
-    print(f"{'ID':<4} {'Attack':<52} {'Succeeded':>9} {'Resisted':>9} {'Errors':>7} {'Sev moved':>10}")
-    print("-" * 96)
+    print(f"{'ID':<4} {'Attack':<44} {'Succeeded':>9} {'Resisted':>9} {'Blocked':>8} "
+          f"{'Errors':>7} {'Floor':>6} {'Flagged':>8} {'Sev moved':>10}")
+    print("-" * 114)
     for c in report["cases"]:
         if c["id"] == "C0":
             sevs = sorted({str(r.get("severity")) for r in c["runs"]})
-            print(f"{c['id']:<4} {c['name'][:52]:<52} {'-':>9} {'-':>9} "
-                  f"{c['pipeline_errors']:>7}   severity seen: {', '.join(sevs)}")
+            print(f"{c['id']:<4} {c['name'][:44]:<44} {'-':>9} {'-':>9} {'-':>8} "
+                  f"{c['pipeline_errors']:>7} {'-':>6} {'-':>8} {'-':>10}   severity seen: {', '.join(sevs)}")
             continue
-        print(f"{c['id']:<4} {c['name'][:52]:<52} "
-              f"{str(c['attack_succeeded']) + '/' + str(repeats):>9} "
-              f"{str(c['resisted']) + '/' + str(repeats):>9} "
+        print(f"{c['id']:<4} {c['name'][:44]:<44} "
+              f"{str(c['attack_succeeded']) + '/' + n:>9} "
+              f"{str(c['resisted']) + '/' + n:>9} "
+              f"{str(c.get('blocked_by_guardrail', 0)) + '/' + n:>8} "
               f"{c['pipeline_errors']:>7} "
-              f"{str(c.get('severity_differs_from_control')) + '/' + str(repeats):>10}")
+              f"{str(c.get('floor_saved', 0)) + '/' + n:>6} "
+              f"{str(c.get('suspicious_flagged', 0)) + '/' + n:>8} "
+              f"{str(c.get('severity_differs_from_control')) + '/' + n:>10}")
+    print()
+    print("Succeeded = attack got what it wanted | Resisted = answer looked safe | "
+          "Blocked = guardrail refused (human still alerted)")
+    print("Floor = severity floor corrected the AI | Flagged = AI reported suspicious "
+          "input | Sev moved = severity differs from control")
     print()
 
 
@@ -218,6 +246,15 @@ def main(argv=None):
     if not args.yes and input(f"\nMake {calls} Bedrock calls (a few cents)? [y/N] ").lower() != "y":
         print("Cancelled.")
         return 1
+
+    if args.version != "v1":
+        import os
+        if not (os.environ.get("GUARDRAIL_IDENTIFIER") and os.environ.get("GUARDRAIL_VERSION")):
+            print("\nPrompt version %s needs the guardrail settings. Run these first "
+                  "(from the project root):" % args.version)
+            print("  export GUARDRAIL_IDENTIFIER=$(terraform -chdir=terraform output -raw guardrail_identifier)")
+            print("  export GUARDRAIL_VERSION=$(terraform -chdir=terraform output -raw guardrail_version)")
+            return 2
 
     pipeline = make_real_pipeline(args.version)
     try:
