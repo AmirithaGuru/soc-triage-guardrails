@@ -1,0 +1,55 @@
+# Manual button: re-runs the whole prompt-injection suite against the REAL
+# Bedrock model and guardrail. It costs a few cents, so it runs only when you
+# click "Run workflow" in the Actions tab, not on every commit.
+#
+# AWS access uses OIDC: GitHub proves who it is with a short-lived token and AWS
+# hands back temporary credentials. There are no AWS keys stored in GitHub.
+# The role can only be assumed from the main branch of this repository, and can
+# only call the one model and the one guardrail (terraform/github_oidc.tf).
+name: Live adversarial run
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write   # lets the job ask GitHub for the OIDC token
+  contents: read
+
+jobs:
+  attacks:
+    name: Run attacks against v2 (live Bedrock)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install boto3==1.43.120
+
+      - name: Get temporary AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4.3.1
+        with:
+          role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
+          aws-region: us-east-1
+          role-session-name: github-adversarial-run
+
+      # --strict makes the job fail if any attack succeeded or any run errored.
+      - name: Run all attacks (70 Bedrock calls)
+        env:
+          GUARDRAIL_IDENTIFIER: ${{ vars.GUARDRAIL_IDENTIFIER }}
+          GUARDRAIL_VERSION: ${{ vars.GUARDRAIL_VERSION }}
+        run: python scripts/run_attacks.py --version v2 --yes --strict --out results/ci_live.json
+
+      - name: Keep the raw results
+        if: always()
+        uses: actions/upload-artifact@v4.6.2
+        with:
+          name: ci-live-results
+          path: results/ci_live.json
+          if-no-files-found: ignore

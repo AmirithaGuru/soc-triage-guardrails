@@ -1,0 +1,82 @@
+# Runs on every push to main and every pull request. No AWS access, no secrets:
+# everything here is offline, free and safe to run on any change.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# The token GitHub gives this workflow can only read the repository.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: Offline tests (unit, end-to-end, attack suite)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: "3.12"
+
+      - name: Install test dependencies
+        run: pip install pytest==9.2.0 boto3==1.43.120
+
+      # Includes the prompt-injection fixtures, the attack checks, and the full
+      # handler run against a fake Bedrock and a fake Slack.
+      - name: Run pytest
+        run: python -m pytest -q
+
+  secret-scan:
+    name: No secrets in the repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Look for Slack webhooks and AWS access keys
+        run: |
+          if grep -rnE "hooks\.slack\.com/services/[A-Z0-9]+|AKIA[0-9A-Z]{16}" . \
+               --exclude-dir=.git --exclude-dir=.github --exclude-dir=.terraform; then
+            echo "A secret-looking string was found. Remove it and rotate the secret."
+            exit 1
+          fi
+          echo "No secrets found."
+
+  terraform:
+    name: Terraform format and validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: terraform
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          persist-credentials: false
+
+      - uses: hashicorp/setup-terraform@v3.1.2
+        with:
+          terraform_version: "1.9.8"
+
+      - name: Check formatting
+        run: terraform fmt -check -recursive
+
+      # -backend=false: no state, no AWS credentials needed.
+      - name: Initialise (providers only)
+        run: terraform init -backend=false -input=false
+
+      - name: Validate
+        run: terraform validate
