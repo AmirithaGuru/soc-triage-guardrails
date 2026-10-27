@@ -45,7 +45,7 @@ jobs:
           curl -sS -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" | python3 -c 'import sys,json,base64; t=json.load(sys.stdin)["value"].split(".")[1]; t+="="*(-len(t)%4); c=json.loads(base64.urlsafe_b64decode(t)); [print(k,"=",c.get(k)) for k in ("iss","aud","sub","repository","repository_owner","ref","event_name","job_workflow_ref")]'
 
       - name: Get temporary AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4.3.1
+        uses: aws-actions/configure-aws-credentials@v6.3.0
         with:
           role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
           aws-region: us-east-1
