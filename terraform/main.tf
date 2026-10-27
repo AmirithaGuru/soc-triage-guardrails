@@ -108,7 +108,9 @@ resource "aws_lambda_function" "triage" {
       # SLACK_WEBHOOK_URL is sensitive — value comes from TF_VAR_slack_webhook_url.
       SLACK_WEBHOOK_URL = var.slack_webhook_url
       # PROMPT_VERSION is not sensitive — it mirrors the code version in prompts.py.
-      PROMPT_VERSION = "v1"
+      PROMPT_VERSION       = "v2"
+      GUARDRAIL_IDENTIFIER = aws_bedrock_guardrail.triage.guardrail_arn
+      GUARDRAIL_VERSION    = aws_bedrock_guardrail_version.triage.version
     }
   }
 
