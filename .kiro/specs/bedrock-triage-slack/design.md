@@ -40,7 +40,7 @@ flowchart TD
     D --> E{post_failure raises?}
     E -- No --> F[Return status: fail_safe]
     E -- Yes --> G[Log CRITICAL: fail-safe delivery failed]
-    G --> H[Return status: critical_error]
+    G --> H[Re-raise exception → Lambda runtime marks invocation failed → EventBridge async retry]
 ```
 
 ### Terraform Resource Dependencies
@@ -86,7 +86,7 @@ def lambda_handler(event: dict, context: object) -> dict
 ```
 
 **Responsibilities:**
-- Read `event["detail"]` as the GuardDuty finding.
+- Read `event.get("detail", {})` as the GuardDuty finding (empty dict on malformed event; Extractor raises ValueError → Fail_Safe).
 - Log `RAW_FINDING_TYPE=<finding["type"]>` at INFO before any processing.
 - Read and validate the `PROMPT_VERSION` environment variable; raise `ValueError` if absent or empty (this triggers the fail-safe).
 - Log `PROMPT_VERSION=<value>` at INFO.
@@ -94,13 +94,13 @@ def lambda_handler(event: dict, context: object) -> dict
 - On success: log `PIPELINE_STATUS=ok`, return `{"status": "ok"}`.
 - On any exception from the pipeline: log `PIPELINE_STATUS=fail_safe REASON=<ExceptionType>` at ERROR, call `post_failure(finding, exc)`.
   - If `post_failure` succeeds: return `{"status": "fail_safe"}`.
-  - If `post_failure` also raises: log `PIPELINE_STATUS=critical_error` at CRITICAL, return `{"status": "critical_error"}` (never re-raise).
+  - If `post_failure` also raises: log `PIPELINE_STATUS=critical_error` at CRITICAL, then re-raise the exception — the Lambda runtime marks the invocation as failed and EventBridge's async retry fires, giving another attempt to deliver the alert.
 
 **Try/except structure:**
 
 ```python
 def lambda_handler(event, context):
-    finding = event["detail"]
+    finding = event.get("detail", {})  # empty dict if event is malformed; Extractor validation catches it
     log.info("RAW_FINDING_TYPE=%s", finding.get("type"))
 
     prompt_version = os.environ.get("PROMPT_VERSION", "")
@@ -127,7 +127,7 @@ def _fail_safe(finding, exc):
         return {"status": "fail_safe"}
     except Exception as inner:
         log.critical("PIPELINE_STATUS=critical_error REASON=%s", type(inner).__name__)
-        return {"status": "critical_error"}
+        raise  # let Lambda runtime mark invocation failed; EventBridge async retry fires
 ```
 
 ---
@@ -191,7 +191,7 @@ Rules:
 def build_messages(fields: dict, version: str) -> tuple[str, list[dict]]
 ```
 
-- If `version == "v1"`: return `(PROMPT_V1, [{"role": "user", "content": fields["finding_json_str"]}])`.
+- If `version == "v1"`: return `(PROMPT_V1, [{"role": "user", "content": [{"text": fields["finding_json_str"]}]}])`. The `content` value must be a list of content-block dicts — the Converse API rejects a plain string and botocore raises before the network call.
 - If `version` is any other string: raise `ValueError(f"Unknown prompt version: {version!r}")`.
 - The messages list is the exact shape the Converse API expects under the `messages` parameter.
 
@@ -203,7 +203,12 @@ Isolates all Bedrock API details. Module-level client creation reuses the Lambda
 
 ```python
 import boto3
-_client = boto3.client("bedrock-runtime", region_name="us-east-1")
+from botocore.config import Config
+
+# Timeout budget: connect 3s + read 8s × 2 attempts = ~22s worst-case,
+# leaving ≥23s for the Slack fail-safe inside the 45s Lambda timeout.
+_CONFIG = Config(connect_timeout=3, read_timeout=8, retries={"max_attempts": 2, "mode": "standard"})
+_client = boto3.client("bedrock-runtime", region_name="us-east-1", config=_CONFIG)
 
 MODEL_ID = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
 
@@ -352,7 +357,7 @@ All fields are passed to `extract_fields` which returns the full dict for `findi
 |---|---|---|
 | `aws_iam_policy.lambda_bedrock` (new) | `iam.tf` | Adds `bedrock:InvokeModel` on 4 ARNs (inference profile + 3 foundation-model ARNs across us-east-1, us-east-2, us-west-2) |
 | `aws_iam_role_policy_attachment.lambda_bedrock` (new) | `iam.tf` | Attaches Bedrock policy to role |
-| `aws_lambda_function.triage` | `main.tf` | Adds `timeout=30`, `memory_size=256`, `environment.SLACK_WEBHOOK_URL`, `environment.PROMPT_VERSION="v1"`, updates `archive_file` source to `source_dir`, output path to `terraform/build/lambda.zip` |
+| `aws_lambda_function.triage` | `main.tf` | Adds `timeout=45`, `memory_size=256`, `environment.SLACK_WEBHOOK_URL`, `environment.PROMPT_VERSION="v1"`, updates `archive_file` source to `source_dir`, output path to `terraform/build/lambda.zip`, excludes `.gitkeep`, `handler.zip`, `__pycache__`, `*.pyc` |
 | `variable "slack_webhook_url"` (new) | `variables.tf` | `sensitive=true`, validation, no default |
 | `.gitignore` | `.gitignore` | Adds `*.tfvars`, `*.tfvars.json`, `terraform.tfstate`, `terraform.tfstate.backup`, `terraform/build/` |
 
@@ -368,7 +373,7 @@ This feature is suitable for property-based testing. The Lambda modules are pure
 
 ### Property 1: Fail-safe is always triggered on pipeline exceptions
 
-*For any* GuardDuty finding dict and any exception raised by any pipeline stage (extract, prompts, bedrock_client, validate, or slack.post_success), the handler SHALL always call `post_failure` and SHALL never propagate an unhandled exception to the Lambda runtime — the return value is always a dict.
+*For any* GuardDuty finding dict and any exception raised by any pipeline stage (extract, prompts, bedrock_client, validate, or slack.post_success), the handler SHALL always call `post_failure`; if `post_failure` succeeds the return value is a dict, and if `post_failure` also raises the handler re-raises to trigger Lambda's async retry.
 
 **Validates: Requirements 1.3, 7.1, 7.5**
 
@@ -400,7 +405,7 @@ This feature is suitable for property-based testing. The Lambda modules are pure
 
 ### Property 5: build_messages v1 output shape is independent of finding content
 
-*For any* dict with a non-empty `finding_json_str` value, `build_messages(fields, "v1")` SHALL return a tuple whose first element is `PROMPT_V1` and whose second element is a list containing exactly one dict with `role="user"` and `content` equal to `fields["finding_json_str"]`.
+*For any* dict with a non-empty `finding_json_str` value, `build_messages(fields, "v1")` SHALL return a tuple whose first element is `PROMPT_V1` and whose second element is a list containing exactly one dict `{"role": "user", "content": [{"text": fields["finding_json_str"]}]}`.
 
 **Validates: Requirements 3.3**
 
@@ -459,7 +464,7 @@ This feature is suitable for property-based testing. The Lambda modules are pure
 | `parse_output` raises `ValueError` | `handler.py` `except Exception` | Fail-safe path |
 | `post_success` raises `IOError` (non-200 Slack) | `handler.py` `except Exception` | Fail-safe path |
 | `post_success` raises `KeyError` (missing field) | `handler.py` `except Exception` | Fail-safe path |
-| `post_failure` raises any exception | Inner try/except in `handler.py` `_fail_safe` | Log CRITICAL, return `{"status": "critical_error"}` |
+| `post_failure` raises any exception | Inner try/except in `handler.py` `_fail_safe` | Log CRITICAL, re-raise — Lambda marks invocation failed, EventBridge async retry fires |
 
 **Fail-safe guarantee:** the handler never raises to the Lambda runtime. Every code path ends in a `return` statement.
 
@@ -494,6 +499,12 @@ Each property test is tagged with a comment in the format:
 | 9: post_success rejects missing fields | `slack.py` | Dicts with one or more required fields removed |
 | 10: post_failure message completeness | `slack.py` | `st.fixed_dictionaries(...)` with finding metadata fields |
 
+
+
+### sys.path and Import Setup
+
+Because `lambda` is a Python keyword, `import lambda.x` is invalid. `tests/conftest.py` adds the `lambda/` folder to `sys.path` at session start so test files can do plain `import extract`, `import prompts`, etc.
+
 ### Unit Tests (`tests/test_unit.py`)
 
 Run with `python -m pytest tests/test_unit.py`. No AWS credentials or network access required — all boto3 and urllib calls are mocked with `unittest.mock.patch`.
@@ -504,10 +515,11 @@ Run with `python -m pytest tests/test_unit.py`. No AWS credentials or network ac
 |---|---|
 | `test_extract_passthrough` | `extract_fields` with a valid finding |
 | `test_extract_invalid_inputs` | Non-dict and empty-dict → `ValueError` |
-| `test_build_messages_v1_shape` | Return shape, PROMPT_V1 in system, finding_json_str in content |
+| `test_build_messages_v1_shape` | Return shape, PROMPT_V1 in system, content is `[{"text": finding_json_str}]` |
 | `test_build_messages_unknown_version` | `ValueError` with version string in message |
 | `test_triage_happy_path` | Mock converse returns text; `triage` returns it |
 | `test_triage_propagates_client_error` | boto3 `ClientError` propagates |
+| `test_triage_request_is_valid_for_converse` | botocore Stubber validates full request shape offline (catches content-block bugs) |
 | `test_parse_output_plain_json` | Valid JSON dict string → dict |
 | `test_parse_output_fence_stripping` | Markdown-fenced JSON → dict |
 | `test_parse_output_invalid_json` | Non-JSON string → `ValueError` |
@@ -518,7 +530,7 @@ Run with `python -m pytest tests/test_unit.py`. No AWS credentials or network ac
 | `test_handler_ok_path` | All modules mocked to succeed → `{"status": "ok"}` |
 | `test_handler_bedrock_error_triggers_fail_safe` | `ClientError` in bedrock → `{"status": "fail_safe"}` |
 | `test_handler_missing_prompt_version` | No env var → `{"status": "fail_safe"}` |
-| `test_handler_critical_error` | `post_failure` also raises → `{"status": "critical_error"}` |
+| `test_handler_critical_error` | `post_failure` also raises → handler re-raises the exception |
 
 ### IAM / Terraform Checks (CI)
 
@@ -534,4 +546,4 @@ Run with `python -m pytest tests/test_unit.py`. No AWS credentials or network ac
 
 2. **What specific behavior proves that the v1 prompt is vulnerable to injection?** The `PROMPT_V1` system prompt puts the raw finding JSON directly into the user message with no delimiters and no instruction to treat it as untrusted data. A payload planted in an attacker-controlled field (e.g., `userName`, a resource tag) is syntactically indistinguishable from the model's own instructions. If the model follows the injected directive — for example, returning `severity: LOW` for a HIGH-severity finding — v1 has been exploited. The test in Phase 8 runs each injection fixture 3–5 times and records the success rate.
 
-3. **Why does the handler return `{"status": "critical_error"}` instead of raising when `post_failure` also fails?** Lambda propagating an unhandled exception causes the runtime to mark the invocation as an error, but it does not prevent future invocations. The risk here is subtler: EventBridge has a retry policy, and an unhandled exception could cause the same finding to be reprocessed multiple times. More importantly, the project's fail-safe principle states that no alert should ever be silently dropped — returning a structured dict with a `critical_error` status allows CloudWatch Logs and Lambda error metrics to surface the failure visibly, so a human can investigate, without crashing the runtime in an uncontrolled way.
+3. **Why does the handler re-raise when `post_failure` also fails, instead of returning a dict?** When both the main pipeline and the fail-safe Slack delivery have failed, returning a dict would silently swallow the failure — the Lambda invocation would be marked successful and EventBridge would never retry. Re-raising causes the Lambda runtime to mark the invocation as an error, which triggers EventBridge's automatic async retry policy. That retry gives the system another chance to deliver the alert to Slack. The CRITICAL log line written just before the re-raise still surfaces the failure in CloudWatch Logs for human investigation. Every other code path (normal success, expected pipeline failures where Slack delivery succeeds) returns a dict, so the re-raise is reserved only for the last-resort scenario.

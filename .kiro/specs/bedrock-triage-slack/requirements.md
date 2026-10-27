@@ -32,7 +32,7 @@ The pipeline data flow is: `handler` → `extract` → `prompts` → `bedrock_cl
 
 #### Acceptance Criteria
 
-1. WHEN a GuardDuty finding event arrives at the Lambda, THE Handler SHALL invoke the Extractor, Prompt_Builder, Bedrock_Client, Output_Validator, and Slack_Poster in that order.
+1. WHEN a GuardDuty finding event arrives at the Lambda, THE Handler SHALL read the finding as `event.get("detail", {})` and invoke the Extractor, Prompt_Builder, Bedrock_Client, Output_Validator, and Slack_Poster in that order; a missing or malformed `detail` key results in an empty dict being passed to the pipeline, which the Extractor's input validation catches and routes to the Fail_Safe.
 2. WHEN all five pipeline stages complete without raising an exception, THE Handler SHALL return `{"status": "ok"}` and log `PIPELINE_STATUS=ok` at INFO level.
 3. IF any pipeline stage raises an exception, THEN THE Handler SHALL log `PIPELINE_STATUS=error REASON=<exception_type>` at ERROR level and invoke the Fail_Safe path.
 4. THE Handler SHALL log the raw GuardDuty finding type at INFO level before any processing begins (checkpoint: `RAW_FINDING_TYPE=<value>`).
@@ -62,7 +62,7 @@ The pipeline data flow is: `handler` → `extract` → `prompts` → `bedrock_cl
 
 1. THE Prompt_Builder SHALL define a module-level string constant `PROMPT_V1` containing the full system prompt text for the naive version.
 2. THE Prompt_Builder SHALL define a module-level string constant `PROMPT_VERSION` whose value is `"v1"`.
-3. WHEN `build_messages` is called with extracted fields and version `"v1"`, THE Prompt_Builder SHALL return a two-element tuple `(system_prompt_str, messages_list)` where `system_prompt_str` is `PROMPT_V1` and `messages_list` contains exactly one dict with keys `"role"` (value `"user"`) and `"content"` (value: the raw finding JSON string with no additional surrounding text or delimiters).
+3. WHEN `build_messages` is called with extracted fields and version `"v1"`, THE Prompt_Builder SHALL return a two-element tuple `(system_prompt_str, messages_list)` where `system_prompt_str` is `PROMPT_V1` and `messages_list` contains exactly one dict `{"role": "user", "content": [{"text": fields["finding_json_str"]}]}` — content must be a list of content-block dicts as required by the Bedrock Converse API; a plain string is rejected by botocore.
 4. THE `PROMPT_V1` system prompt SHALL instruct the model to act as a SOC analyst, summarize the GuardDuty finding, map it to a MITRE ATT&CK technique, rate its severity as one of `LOW`, `MEDIUM`, `HIGH`, or `CRITICAL`, suggest a concrete remediation action, and return **only** valid JSON matching the Output_Contract with no prose outside the JSON block.
 5. THE `PROMPT_V1` system prompt SHALL NOT include any instruction to treat the finding content as untrusted data, SHALL NOT use `<finding_data>` delimiters, and SHALL NOT include a Bedrock Guardrail — these omissions are deliberate so the v1 vulnerability is reproducible.
 6. IF `build_messages` is called with an unrecognized version string (e.g., `"v99"`), THEN THE Prompt_Builder SHALL raise a `ValueError` whose message includes the unrecognized version string value.
@@ -81,6 +81,7 @@ The pipeline data flow is: `handler` → `extract` → `prompts` → `bedrock_cl
 4. WHEN the Converse API returns successfully, THE Bedrock_Client SHALL log `BEDROCK_STOP_REASON=<response["stopReason"]>` at INFO level.
 5. IF the Bedrock Converse API raises a `ClientError` or `EndpointResolutionError`, THEN THE Bedrock_Client SHALL re-raise the exception so the Handler can trigger the Fail_Safe.
 6. THE Bedrock_Client SHALL use a `boto3` client for `bedrock-runtime` in region `us-east-1`; the client SHALL be created once at module import time to reuse the Lambda execution environment's connection.
+7. THE Bedrock_Client SHALL configure the boto3 client with `connect_timeout=3`, `read_timeout=8`, and `retries={"max_attempts": 2, "mode": "standard"}` so that a slow or failed Bedrock call completes (including one retry) within approximately 19 seconds — leaving at least 23 seconds for the Slack fail-safe post inside the 45-second Lambda timeout.
 
 ---
 
@@ -123,9 +124,9 @@ The pipeline data flow is: `handler` → `extract` → `prompts` → `bedrock_cl
 
 1. WHEN any stage of the pipeline — including the Bedrock_Client invocation, response parsing, and Slack success post — raises an exception, THE Handler SHALL call `post_failure` with the original finding dict and the caught exception.
 2. WHEN the Fail_Safe path is taken, THE Handler SHALL log `PIPELINE_STATUS=fail_safe REASON=<exception_type>` at ERROR level before calling `post_failure`.
-3. IF `post_failure` raises an exception, THEN THE Handler SHALL log a message indicating fail-safe delivery failure at CRITICAL level and return `{"status": "critical_error"}` without re-raising the exception.
+3. IF `post_failure` raises an exception, THEN THE Handler SHALL log `PIPELINE_STATUS=critical_error REASON=<exception_type>` at CRITICAL level and re-raise the exception, so the Lambda runtime marks the invocation as failed and EventBridge's automatic async retry gets another chance to deliver the alert.
 4. WHEN `post_failure` completes without raising an exception during the Fail_Safe path, THE Handler SHALL return `{"status": "fail_safe"}`.
-5. THE Handler SHALL never propagate an unhandled exception to the Lambda runtime — every execution path, including all error and fail-safe paths, SHALL end in a return value.
+5. THE Handler SHALL only propagate an exception to the Lambda runtime when `post_failure` itself fails (the critical-error path); all other execution paths SHALL end in a `return` statement with a dict value.
 
 ---
 
@@ -163,7 +164,7 @@ The pipeline data flow is: `handler` → `extract` → `prompts` → `bedrock_cl
 
 #### Acceptance Criteria
 
-1. THE Lambda function SHALL have a timeout of 30 seconds; this provides headroom for a Bedrock Converse call (typically 2-8 seconds for Haiku) plus Slack delivery, while remaining well within EventBridge's 300-second invocation limit.
+1. THE Lambda function SHALL have a timeout of 45 seconds. Worst-case budget: Bedrock connect+read × 2 attempts = up to 22 seconds, then the Slack fail-safe runs after Bedrock fails (up to 10 seconds) — total up to 32 seconds. 45 seconds provides a safe margin and remains well within EventBridge's 300-second invocation limit.
 2. THE Lambda function SHALL have a memory allocation of 256 MB; the function uses only Python stdlib and boto3 with no large data structures, so the default 128 MB is sufficient, but 256 MB is set to give the Lambda more CPU proportional to memory and reduce cold-start latency.
 3. THE Terraform `aws_lambda_function` resource SHALL explicitly set both `timeout` and `memory_size` attributes so the values are visible in code review rather than relying on AWS defaults.
 

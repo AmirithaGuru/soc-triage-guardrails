@@ -62,7 +62,8 @@ is ever silently dropped.
       Phase 8 injection payloads have a realistic attack surface.
     - Implement `build_messages(fields: dict, version: str) -> tuple[str, list[dict]]`:
       - If `version == "v1"`: return
-        `(PROMPT_V1, [{"role": "user", "content": fields["finding_json_str"]}])`.
+        `(PROMPT_V1, [{"role": "user", "content": [{"text": fields["finding_json_str"]}]}])`.
+        The Converse API requires content to be a list of content-block dicts; a plain string is rejected by botocore.
       - Any other version string: raise
         `ValueError(f"Unknown prompt version: {version!r}")`.
     - Add type hints and module-level docstring.
@@ -83,9 +84,12 @@ is ever silently dropped.
 
 - [ ] 4. Create `lambda/bedrock_client.py` — Bedrock Converse API wrapper
   - [ ] 4.1 Implement module-level client and `triage` function
-    - Create `_client = boto3.client("bedrock-runtime", region_name="us-east-1")` at
-      module level (reuses the Lambda execution environment's connection across warm
-      invocations).
+    - Create the module-level client with `botocore.config.Config(connect_timeout=3,
+      read_timeout=8, retries={"max_attempts": 2, "mode": "standard"})`. Timeout budget:
+      connect 3s + read 8s × up to 2 attempts ≈ 19s worst-case, leaving ≥10s for the
+      Slack fail-safe post inside the 30s Lambda timeout.
+    - `_client = boto3.client("bedrock-runtime", region_name="us-east-1", config=_CONFIG)`
+      at module level (reuses the Lambda execution environment's connection).
     - Define `MODEL_ID = "us.anthropic.claude-haiku-4-5-20251001-v1:0"`.
     - Implement `triage(system_prompt: str, messages: list[dict]) -> str`:
       - Call `_client.converse(modelId=MODEL_ID, system=[{"text": system_prompt}], messages=messages, inferenceConfig={"maxTokens": 600, "temperature": 0})`.
@@ -96,7 +100,7 @@ is ever silently dropped.
       - Let `ClientError` and `EndpointResolutionError` propagate unchanged so the
         handler can trigger the fail-safe.
     - Add type hints and module-level docstring.
-    - _Requirements: 4.1, 4.2, 4.3, 4.4, 4.5, 4.6_
+    - _Requirements: 4.1, 4.2, 4.3, 4.4, 4.5, 4.6, 4.7_
 
 - [ ] 5. Create `lambda/validate.py` — best-effort output parser
   - [ ] 5.1 Implement `parse_output(text: str) -> dict`
@@ -178,7 +182,7 @@ is ever silently dropped.
       `prompts`, `triage` from `bedrock_client`, `parse_output` from `validate`,
       `post_success`/`post_failure` from `slack`.
     - `lambda_handler(event, context) -> dict`:
-      1. Read `finding = event["detail"]`.
+      1. Read `finding = event.get("detail", {})` — empty dict on malformed event; Extractor validation raises ValueError which routes to fail-safe.
       2. Log `RAW_FINDING_TYPE=<finding.get("type")>` at INFO.
       3. Read `PROMPT_VERSION` env var; if absent or empty construct
          `ValueError("PROMPT_VERSION env var is absent or empty")` and call
@@ -191,17 +195,16 @@ is ever silently dropped.
     - `_fail_safe(finding, exc) -> dict`:
       1. Log `PIPELINE_STATUS=fail_safe REASON=<type(exc).__name__>` at ERROR.
       2. `try`: call `post_failure(finding, exc)` → return `{"status": "fail_safe"}`.
-      3. `except Exception as inner`: log `PIPELINE_STATUS=critical_error REASON=<type(inner).__name__>` at CRITICAL → return `{"status": "critical_error"}`.
-    - The handler MUST never propagate an unhandled exception to the Lambda runtime —
-      every code path ends in a `return` statement.
+      3. `except Exception as inner`: log `PIPELINE_STATUS=critical_error REASON=<type(inner).__name__>` at CRITICAL → re-raise `inner` so the Lambda runtime marks the invocation failed and EventBridge's async retry fires.
+    - Every code path returns a dict EXCEPT the critical-error path (when `post_failure` also raises), which re-raises deliberately to trigger Lambda's async retry.
     - Add type hints and update the module-level docstring to describe the full pipeline.
     - _Requirements: 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 7.1, 7.2, 7.3, 7.4, 7.5_
 
   - [ ]* 7.2 Write property test for fail-safe guarantee
     - **Property 1: Fail-safe is always triggered on pipeline exceptions** — for any
       GuardDuty finding dict and any exception raised by any pipeline stage,
-      `lambda_handler` SHALL always call `post_failure` and SHALL never propagate an
-      unhandled exception; the return value is always a dict.
+      `lambda_handler` SHALL always call `post_failure`; if `post_failure` succeeds the
+      return value is a dict; if `post_failure` also raises the handler re-raises.
     - **Validates: Requirements 1.3, 7.1, 7.5**
     - Use `st.dictionaries(st.text(), st.text())` for finding, mock each pipeline stage
       to raise `st.from_type(Exception)`. Minimum 100 examples.
@@ -251,8 +254,7 @@ is ever silently dropped.
     - Change `output_path` from inside `lambda/` to `"${path.module}/build/lambda.zip"`
       so the zip is written to `terraform/build/lambda.zip` and never nested inside
       the source directory (which would cause the zip to include itself).
-    - Add `excludes = [".gitkeep"]` to the `archive_file` data source so the placeholder
-      file is not included in the deployment package.
+    - Add `excludes = [".gitkeep", "handler.zip", "__pycache__", "**/__pycache__/**", "*.pyc"]` to the `archive_file` data source.
     - Create the `terraform/build/` directory (e.g. by adding a `.gitkeep` inside it
       locally) and ensure `terraform/build/` is listed in `.gitignore` (see task 1).
     - _Requirements: 11.1, 11.2, 11.3, 11.4_
@@ -281,8 +283,7 @@ is ever silently dropped.
 
   - [ ] 12.2 Prompts module tests
     - `test_build_messages_v1_shape` — returns tuple; first element is `PROMPT_V1`;
-      second element is a list with one dict, `role="user"`,
-      `content=fields["finding_json_str"]`.
+      second element is `[{"role": "user", "content": [{"text": finding_json_str}]}]`.
     - `test_build_messages_unknown_version` — raises `ValueError`; message contains the
       unrecognized version string.
     - _Requirements: 3.3, 3.6_
@@ -292,6 +293,11 @@ is ever silently dropped.
       response dict; assert `triage` returns the text string.
     - `test_triage_propagates_client_error` — mock `_client.converse` to raise
       `ClientError`; assert it propagates (is not swallowed).
+    - `test_triage_request_is_valid_for_converse` — use `botocore.stub.Stubber` on
+      `bedrock_client._client`; call `stubber.add_response("converse", <valid response>)`
+      then call `triage()` with the real output of `build_messages`; botocore validates
+      the full request shape offline. A plain `MagicMock` would not catch a wrong
+      content-block format.
     - `test_triage_malformed_response_raises_value_error` — mock response missing the
       expected keys; assert `ValueError` is raised.
     - _Requirements: 4.3, 4.5_
@@ -321,8 +327,15 @@ is ever silently dropped.
     - `test_handler_missing_prompt_version` — unset `PROMPT_VERSION` env var →
       returns `{"status": "fail_safe"}`.
     - `test_handler_critical_error` — mock `triage` to raise any exception, mock
-      `post_failure` to also raise → returns `{"status": "critical_error"}`.
+      `post_failure` to also raise → assert `lambda_handler` raises (does not return).
     - _Requirements: 1.2, 1.3, 1.6, 7.3, 7.4, 7.5, 12.1, 12.2, 12.3, 12.4_
+
+
+- [ ] 12.7 Create `tests/conftest.py` — add lambda/ to sys.path
+  - `lambda` is a Python keyword so `import lambda.extract` is invalid. `conftest.py`
+    inserts the `lambda/` directory at the front of `sys.path` at session start so all
+    test files can use plain `import extract`, `import prompts`, etc.
+  - _Requirements: 12.1_
 
 - [ ] 13. Run unit tests — all must pass before Terraform
   - Run `python -m pytest tests/test_unit.py -v` and show the full output.
@@ -366,9 +379,6 @@ is ever silently dropped.
 - Terraform `apply` (task 15) requires explicit human approval — per
   `steering/security.md`: "NEVER run `terraform apply` without asking me first and
   showing the plan."
-- Property tests use [Hypothesis](https://hypothesis.readthedocs.io/) with a minimum of
-  100 examples per property (`@settings(max_examples=100)`); install with
-  `pip install hypothesis` before running the test suite.
 
 ---
 
