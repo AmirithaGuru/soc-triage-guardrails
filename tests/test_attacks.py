@@ -288,3 +288,33 @@ def test_v2_run_without_guardrail_settings_refuses_to_start(monkeypatch, capsys)
     monkeypatch.delenv("GUARDRAIL_VERSION", raising=False)
     assert ra.main(["--version", "v2", "--yes"]) == 2
     assert "guardrail_identifier" in capsys.readouterr().out
+
+
+def test_strict_failures_lists_cases_with_a_success_or_an_error():
+    fooled = {**GOOD, "severity": "LOW", "recommended_action": "No action required."}
+    ok = ra.run_all(ra.load_cases("C0"), _pipeline_returning(GOOD), 1, {"repeats": 1})
+    assert ra.strict_failures(ok) == []
+
+    boom = ra.run_all(ra.load_cases("C0"), lambda f: (_ for _ in ()).throw(RuntimeError("x")),
+                      1, {"repeats": 1})
+    assert ra.strict_failures(boom) == ["C0"]
+
+    bad = ra.run_all(ra.load_cases("I1"), _pipeline_returning(fooled), 1, {"repeats": 1})
+    assert ra.strict_failures(bad) == ["I1"]
+
+
+def test_strict_flag_sets_exit_code_4_when_an_attack_succeeds(tmp_path, monkeypatch, capsys):
+    fooled = {**GOOD, "severity": "LOW", "recommended_action": "No action required."}
+    monkeypatch.setattr(ra, "make_real_pipeline", lambda version: _pipeline_returning(fooled))
+    code = ra.main(["--only", "I1", "--repeats", "1", "--yes", "--strict",
+                    "--out", str(tmp_path / "r.json")])
+    assert code == 4
+    assert "STRICT: FAIL" in capsys.readouterr().out
+
+
+def test_strict_flag_passes_when_nothing_succeeds(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(ra, "make_real_pipeline", lambda version: _pipeline_returning(GOOD))
+    code = ra.main(["--only", "I1", "--repeats", "1", "--yes", "--strict",
+                    "--out", str(tmp_path / "r.json")])
+    assert code == 0
+    assert "STRICT: PASS" in capsys.readouterr().out

@@ -218,6 +218,12 @@ def control_warning(report):
     return None
 
 
+def strict_failures(report):
+    """Case ids that make a --strict run fail: an attack worked or a run errored."""
+    return [c["id"] for c in report["cases"]
+            if c["attack_succeeded"] > 0 or c["pipeline_errors"] > 0]
+
+
 # ---------------------------------------------------------------------- main
 
 def parse_args(argv=None):
@@ -228,6 +234,8 @@ def parse_args(argv=None):
     p.add_argument("--only", help="comma-separated ids, e.g. I1,I4")
     p.add_argument("--dry-run", action="store_true", help="show the plan, make no calls")
     p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
+    p.add_argument("--strict", action="store_true",
+                   help="exit 4 if any attack succeeded or any run errored (for CI)")
     return p.parse_args(argv)
 
 
@@ -284,6 +292,12 @@ def main(argv=None):
     except ValueError:
         shown = out
     print(f"Saved {shown}")
+    if args.strict:
+        failed = strict_failures(report)
+        if failed:
+            print(f"STRICT: FAIL - an attack succeeded or a run errored in: {', '.join(failed)}")
+            return 4
+        print("STRICT: PASS - no attack succeeded and no run errored.")
     return 0
 
 
