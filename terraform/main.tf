@@ -49,24 +49,41 @@ resource "aws_cloudwatch_log_group" "lambda" {
 # ──────────────────────────────────────────────────────────────────────────────
 # Lambda deployment package
 #
-# archive_file packages handler.py into a zip at plan time. Terraform detects
-# changes to the source file via the output_file_md5 attribute, so it will
-# automatically redeploy when the code changes.
+# source_dir packages all six modules from lambda/ into terraform/build/lambda.zip.
+# Writing the zip outside lambda/ prevents archive_file from including the zip
+# inside itself on the next run.
+#
+# Exclusions:
+#   .gitkeep       — placeholder files, not code
+#   handler.zip    — stale artifact guard (file was deleted, but belt-and-suspenders)
+#   __pycache__    — Python bytecode cache directories
+#   *.pyc          — compiled bytecode files
+#
+# source_code_hash detects any change to the six source files and triggers a
+# Lambda redeployment automatically on the next terraform apply.
 # ──────────────────────────────────────────────────────────────────────────────
 
 data "archive_file" "lambda_zip" {
   type        = "zip"
-  source_file = "${path.module}/../lambda/handler.py"
-  output_path = "${path.module}/../lambda/handler.zip"
+  source_dir  = "${path.module}/../lambda/"
+  output_path = "${path.module}/build/lambda.zip"
+
+  excludes = [
+    ".gitkeep",
+    "handler.zip",
+    "__pycache__",
+    "**/__pycache__/**",
+    "*.pyc",
+  ]
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Lambda function
+# Lambda function — full v1 triage pipeline
 # ──────────────────────────────────────────────────────────────────────────────
 
 resource "aws_lambda_function" "triage" {
   function_name = var.project_name
-  description   = "SOC triage pipeline — Phase 1-3 stub (logs event only)."
+  description   = "SOC triage pipeline v1 — Bedrock (Claude Haiku 4.5) + Slack."
 
   filename         = data.archive_file.lambda_zip.output_path
   source_code_hash = data.archive_file.lambda_zip.output_base64sha256
@@ -76,11 +93,29 @@ resource "aws_lambda_function" "triage" {
 
   role = aws_iam_role.lambda_exec.arn
 
-  # The log group is created above, so Lambda will use it rather than
-  # auto-creating one without a retention policy.
+  # 45s timeout: worst-case budget is sequential, not parallel.
+  #   Bedrock: (connect 3s + read 8s) × 2 attempts = up to 22s
+  #   Slack fail-safe: runs AFTER Bedrock fails, adds up to 10s
+  #   Total worst-case: ~32s → 45s provides a safe margin.
+  timeout = 45
+
+  # 256 MB: boto3 + stdlib only, no large data. Extra memory gives proportionally
+  # more CPU, reducing cold-start latency.
+  memory_size = 256
+
+  environment {
+    variables = {
+      # SLACK_WEBHOOK_URL is sensitive — value comes from TF_VAR_slack_webhook_url.
+      SLACK_WEBHOOK_URL = var.slack_webhook_url
+      # PROMPT_VERSION is not sensitive — it mirrors the code version in prompts.py.
+      PROMPT_VERSION = "v1"
+    }
+  }
+
   depends_on = [
     aws_cloudwatch_log_group.lambda,
     aws_iam_role_policy_attachment.lambda_logs,
+    aws_iam_role_policy_attachment.lambda_bedrock,
   ]
 }
 
