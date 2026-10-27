@@ -32,6 +32,18 @@ jobs:
       - name: Install dependencies
         run: pip install boto3==1.43.120
 
+      # TEMPORARY DEBUG STEP: shows what the role variable looks like (account
+      # number hidden) and which identity GitHub claims. It prints only the
+      # readable claims, never the token itself. Remove once OIDC works.
+      - name: Debug OIDC identity (temporary)
+        continue-on-error: true
+        env:
+          ROLE: ${{ vars.AWS_CI_ROLE_ARN }}
+        run: |
+          echo "role variable length: ${#ROLE} (expected 56)"
+          printf 'role variable (account hidden): %s\n' "$(printf '%s' "$ROLE" | sed -E 's/[0-9]{12}/<ACCOUNT>/' | cat -A)"
+          curl -sS -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" | python3 -c 'import sys,json,base64; t=json.load(sys.stdin)["value"].split(".")[1]; t+="="*(-len(t)%4); c=json.loads(base64.urlsafe_b64decode(t)); [print(k,"=",c.get(k)) for k in ("iss","aud","sub","repository","repository_owner","ref","event_name","job_workflow_ref")]'
+
       - name: Get temporary AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4.3.1
         with:
