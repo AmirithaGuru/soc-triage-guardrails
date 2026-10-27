@@ -9,3 +9,5 @@ crash.log
 __pycache__/
 *.zip
 .venv/
+*.tfvars.json
+terraform/build/
