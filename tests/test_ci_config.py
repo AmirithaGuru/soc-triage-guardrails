@@ -59,3 +59,16 @@ def test_oidc_role_trust_is_exact_and_main_branch_only():
 def test_oidc_role_permissions_are_the_two_bedrock_actions_only():
     actions = re.findall(r'Action\s*=\s*\["(bedrock:[A-Za-z]+)"\]', OIDC)
     assert sorted(actions) == ["bedrock:ApplyGuardrail", "bedrock:InvokeModel"]
+
+
+def test_oidc_subject_is_matched_by_numeric_ids_not_only_names():
+    m = re.search(r'default\s*=\s*"([^"]+@\d+/[^"]+@\d+)"', OIDC)
+    assert m, "the repo subject must include owner and repo IDs (owner@id/repo@id)"
+    assert "var.github_oidc_repo_subject" in OIDC
+    assert "var.github_repository" not in OIDC
+
+
+def test_no_debug_step_that_reads_the_oidc_token_is_left_in_the_workflows():
+    for text in ALL_WORKFLOWS:
+        assert "ACTIONS_ID_TOKEN_REQUEST" not in text
+        assert "Debug OIDC" not in text
