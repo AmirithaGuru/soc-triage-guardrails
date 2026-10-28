@@ -21,11 +21,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4.2.2
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@v5.6.0
+      - uses: actions/setup-python@v7.1.0
         with:
           python-version: "3.12"
 
@@ -33,7 +33,7 @@ jobs:
         run: pip install boto3==1.43.120
 
       - name: Get temporary AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4.3.1
+        uses: aws-actions/configure-aws-credentials@v6.3.0
         with:
           role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
           aws-region: us-east-1
@@ -48,7 +48,7 @@ jobs:
 
       - name: Keep the raw results
         if: always()
-        uses: actions/upload-artifact@v4.6.2
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: ci-live-results
           path: results/ci_live.json
