@@ -1,0 +1,95 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 860" width="1600" height="860" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+<defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#374151"/></marker></defs>
+<rect width="1600" height="860" rx="14" fill="#ffffff"/>
+<text x="40" y="42" font-size="26" font-weight="700" fill="#111827" text-anchor="start">soc-triage-guardrails: architecture</text>
+<text x="40" y="66" font-size="15" font-weight="400" fill="#4b5563" text-anchor="start">GuardDuty finding to a triaged, escaped Slack alert. The finding is untrusted input, so every stage is defended.</text>
+<rect x="30" y="92" width="1330" height="610" rx="14" fill="#f8fafc" stroke="#94a3b8" stroke-width="2" stroke-dasharray="10 7"/>
+<text x="48" y="120" font-size="16" font-weight="700" fill="#475569" text-anchor="start">AWS account  ·  us-east-1</text>
+<rect x="70" y="205" width="200" height="130" rx="10" fill="#ffffff" stroke="#DD344C" stroke-width="2"/>
+<path d="M70,215 a10,10 0 0 1 10,-10 h180 a10,10 0 0 1 10,10 v26 h-200 z" fill="#DD344C"/>
+<text x="170.0" y="230" font-size="17" font-weight="700" fill="#ffffff" text-anchor="middle">GuardDuty</text>
+<text x="170.0" y="267" font-size="14" font-weight="400" fill="#374151" text-anchor="middle">detector (30-day trial)</text>
+<text x="170.0" y="288" font-size="14" font-weight="400" fill="#374151" text-anchor="middle">emits a finding</text>
+<rect x="330" y="205" width="200" height="130" rx="10" fill="#ffffff" stroke="#E7157B" stroke-width="2"/>
+<path d="M330,215 a10,10 0 0 1 10,-10 h180 a10,10 0 0 1 10,10 v26 h-200 z" fill="#E7157B"/>
+<text x="430.0" y="230" font-size="17" font-weight="700" fill="#ffffff" text-anchor="middle">EventBridge</text>
+<text x="430.0" y="267" font-size="14" font-weight="400" fill="#374151" text-anchor="middle">default bus + rule</text>
+<text x="430.0" y="288" font-size="14" font-weight="400" fill="#374151" text-anchor="middle">matches GuardDuty</text>
+<text x="430.0" y="309" font-size="14" font-weight="400" fill="#374151" text-anchor="middle">findings</text>
+<rect x="590" y="165" width="300" height="330" rx="10" fill="#ffffff" stroke="#ED7100" stroke-width="2"/>
+<path d="M590,175 a10,10 0 0 1 10,-10 h280 a10,10 0 0 1 10,10 v26 h-300 z" fill="#ED7100"/>
+<text x="740.0" y="190" font-size="17" font-weight="700" fill="#ffffff" text-anchor="middle">Lambda: soc-triage</text>
+<text x="740.0" y="227" font-size="14" font-weight="400" fill="#374151" text-anchor="middle">Python 3.12 · 256 MB · 45 s</text>
+<text x="612" y="255" font-size="15" font-weight="400" fill="#1f2937" text-anchor="start">1  Allowlist + sanitise fields</text>
+<text x="612" y="282" font-size="15" font-weight="400" fill="#1f2937" text-anchor="start">2  Hardened, delimited prompt</text>
+<text x="612" y="309" font-size="15" font-weight="400" fill="#1f2937" text-anchor="start">3  Guardrail check (via Bedrock)</text>
+<text x="612" y="336" font-size="15" font-weight="400" fill="#1f2937" text-anchor="start">4  Strict output validation</text>
+<text x="612" y="363" font-size="15" font-weight="400" fill="#1f2937" text-anchor="start">5  Severity = GuardDuty band</text>
+<text x="612" y="390" font-size="15" font-weight="400" fill="#1f2937" text-anchor="start">6  Escape output for Slack</text>
+<line x1="612" y1="426" x2="868" y2="426" stroke="#e5e7eb" stroke-width="2"/>
+<text x="740" y="452" font-size="14" font-weight="700" fill="#b45309" text-anchor="middle">Any failure: raw finding to Slack</text>
+<text x="740" y="472" font-size="14" font-weight="400" fill="#b45309" text-anchor="middle">(never drop an alert)</text>
+<rect x="950" y="165" width="390" height="330" rx="10" fill="#ffffff" stroke="#01A88D" stroke-width="2"/>
+<path d="M950,175 a10,10 0 0 1 10,-10 h370 a10,10 0 0 1 10,10 v26 h-390 z" fill="#01A88D"/>
+<text x="1145" y="190" font-size="17" font-weight="700" fill="#ffffff" text-anchor="middle">Amazon Bedrock</text>
+<rect x="975" y="214" width="340" height="122" rx="10" fill="#ffffff" stroke="#0f766e" stroke-width="2"/>
+<path d="M975,224 a10,10 0 0 1 10,-10 h320 a10,10 0 0 1 10,10 v26 h-340 z" fill="#0f766e"/>
+<text x="1145.0" y="239" font-size="17" font-weight="700" fill="#ffffff" text-anchor="middle">Guardrail</text>
+<text x="1145.0" y="276" font-size="14" font-weight="400" fill="#374151" text-anchor="middle">PROMPT_ATTACK filter, HIGH</text>
+<text x="1145.0" y="297" font-size="14" font-weight="400" fill="#374151" text-anchor="middle">pinned version 1</text>
+<text x="1145.0" y="318" font-size="14" font-weight="400" fill="#374151" text-anchor="middle">block = fail-safe path</text>
+<rect x="975" y="378" width="340" height="108" rx="10" fill="#ffffff" stroke="#0f766e" stroke-width="2"/>
+<path d="M975,388 a10,10 0 0 1 10,-10 h320 a10,10 0 0 1 10,10 v26 h-340 z" fill="#0f766e"/>
+<text x="1145.0" y="403" font-size="17" font-weight="700" fill="#ffffff" text-anchor="middle">Claude Haiku 4.5</text>
+<text x="1145.0" y="440" font-size="14" font-weight="400" fill="#374151" text-anchor="middle">Converse API, temperature 0</text>
+<text x="1145.0" y="461" font-size="14" font-weight="400" fill="#374151" text-anchor="middle">cross-region inference profile</text>
+<rect x="1420" y="205" width="160" height="130" rx="10" fill="#ffffff" stroke="#4A154B" stroke-width="2"/>
+<path d="M1420,215 a10,10 0 0 1 10,-10 h140 a10,10 0 0 1 10,10 v26 h-160 z" fill="#4A154B"/>
+<text x="1500.0" y="230" font-size="17" font-weight="700" fill="#ffffff" text-anchor="middle">Slack</text>
+<text x="1500.0" y="267" font-size="14" font-weight="400" fill="#374151" text-anchor="middle">Incoming Webhook</text>
+<text x="1500.0" y="288" font-size="14" font-weight="400" fill="#374151" text-anchor="middle">alerts channel</text>
+<path d="M270,270 H330" fill="none" stroke="#374151" stroke-width="2.4" marker-end="url(#ah)" stroke-linejoin="round"/>
+<text x="300" y="252" font-size="13" font-weight="400" fill="#4b5563" text-anchor="middle">finding</text>
+<path d="M530,270 H590" fill="none" stroke="#374151" stroke-width="2.4" marker-end="url(#ah)" stroke-linejoin="round"/>
+<text x="560" y="252" font-size="13" font-weight="400" fill="#4b5563" text-anchor="middle">async</text>
+<path d="M890,276 H975" fill="none" stroke="#374151" stroke-width="2.4" marker-end="url(#ah)" stroke-linejoin="round"/>
+<text x="932" y="258" font-size="13" font-weight="400" fill="#4b5563" text-anchor="middle">Converse</text>
+<path d="M1145,336 V378" fill="none" stroke="#374151" stroke-width="2.4" marker-end="url(#ah)" stroke-linejoin="round"/>
+<text x="1157" y="362" font-size="13" font-weight="400" fill="#4b5563" text-anchor="start">if passed</text>
+<path d="M740,165 V136 H1500 V205" fill="none" stroke="#374151" stroke-width="2.4" marker-end="url(#ah)" stroke-linejoin="round"/>
+<text x="1120" y="128" font-size="14" font-weight="400" fill="#4b5563" text-anchor="middle">triage alert, escaped (or the raw finding when anything fails)</text>
+<rect x="590" y="545" width="145" height="125" rx="10" fill="#ffffff" stroke="#E7157B" stroke-width="2"/>
+<path d="M590,555 a10,10 0 0 1 10,-10 h125 a10,10 0 0 1 10,10 v26 h-145 z" fill="#E7157B"/>
+<text x="662.5" y="570" font-size="17" font-weight="700" fill="#ffffff" text-anchor="middle">CloudWatch</text>
+<text x="662.5" y="607" font-size="14" font-weight="400" fill="#374151" text-anchor="middle">Logs</text>
+<text x="662.5" y="628" font-size="14" font-weight="400" fill="#374151" text-anchor="middle">14-day retention</text>
+<rect x="745" y="545" width="145" height="125" rx="10" fill="#ffffff" stroke="#DD344C" stroke-width="2"/>
+<path d="M745,555 a10,10 0 0 1 10,-10 h125 a10,10 0 0 1 10,10 v26 h-145 z" fill="#DD344C"/>
+<text x="817.5" y="570" font-size="17" font-weight="700" fill="#ffffff" text-anchor="middle">IAM role</text>
+<text x="817.5" y="607" font-size="14" font-weight="400" fill="#374151" text-anchor="middle">Lambda exec role</text>
+<text x="817.5" y="628" font-size="14" font-weight="400" fill="#374151" text-anchor="middle">least privilege</text>
+<path d="M662,495 V545" fill="none" stroke="#374151" stroke-width="2.2" stroke-dasharray="6 5" marker-end="url(#ah)"/>
+<path d="M818,495 V545" fill="none" stroke="#374151" stroke-width="2.2" stroke-dasharray="6 5" marker-end="url(#ah)"/>
+<rect x="950" y="545" width="390" height="125" rx="10" fill="#ffffff" stroke="#DD344C" stroke-width="2"/>
+<path d="M950,555 a10,10 0 0 1 10,-10 h370 a10,10 0 0 1 10,10 v26 h-390 z" fill="#DD344C"/>
+<text x="1145.0" y="570" font-size="17" font-weight="700" fill="#ffffff" text-anchor="middle">IAM role: CI (OIDC)</text>
+<text x="1145.0" y="607" font-size="14" font-weight="400" fill="#374151" text-anchor="middle">assumable only by this repo's main branch</text>
+<text x="1145.0" y="628" font-size="14" font-weight="400" fill="#374151" text-anchor="middle">InvokeModel + ApplyGuardrail only</text>
+<path d="M1145,545 V496" fill="none" stroke="#374151" stroke-width="2.4" stroke-dasharray="7 6" marker-end="url(#ah)" stroke-linejoin="round"/>
+<text x="1155" y="523" font-size="13" font-weight="400" fill="#4b5563" text-anchor="start">live attack suite</text>
+<rect x="950" y="745" width="390" height="95" rx="10" fill="#ffffff" stroke="#24292f" stroke-width="2"/>
+<path d="M950,755 a10,10 0 0 1 10,-10 h370 a10,10 0 0 1 10,10 v26 h-390 z" fill="#24292f"/>
+<text x="1145.0" y="770" font-size="17" font-weight="700" fill="#ffffff" text-anchor="middle">GitHub Actions</text>
+<text x="1145.0" y="807" font-size="14" font-weight="400" fill="#374151" text-anchor="middle">short-lived OIDC token, no stored AWS keys</text>
+<path d="M1145,745 V670" fill="none" stroke="#374151" stroke-width="2.4" stroke-dasharray="7 6" marker-end="url(#ah)" stroke-linejoin="round"/>
+<text x="1155" y="718" font-size="13" font-weight="400" fill="#4b5563" text-anchor="start">assume role</text>
+<rect x="70" y="745" width="300" height="95" rx="10" fill="#ffffff" stroke="#7B42BC" stroke-width="2"/>
+<path d="M70,755 a10,10 0 0 1 10,-10 h280 a10,10 0 0 1 10,10 v26 h-300 z" fill="#7B42BC"/>
+<text x="220.0" y="770" font-size="17" font-weight="700" fill="#ffffff" text-anchor="middle">Terraform</text>
+<text x="220.0" y="807" font-size="14" font-weight="400" fill="#374151" text-anchor="middle">provisions everything in the AWS box</text>
+<path d="M220,745 V702" fill="none" stroke="#374151" stroke-width="2.4" stroke-dasharray="7 6" marker-end="url(#ah)" stroke-linejoin="round"/>
+<line x1="460" y1="790" x2="520" y2="790" stroke="#374151" stroke-width="2.4" marker-end="url(#ah)"/>
+<text x="532" y="795" font-size="14" font-weight="400" fill="#374151" text-anchor="start">request path</text>
+<line x1="660" y1="790" x2="720" y2="790" stroke="#374151" stroke-width="2.4" stroke-dasharray="7 6" marker-end="url(#ah)"/>
+<text x="732" y="795" font-size="14" font-weight="400" fill="#374151" text-anchor="start">supporting / deploy</text>
+</svg>
