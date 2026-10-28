@@ -99,7 +99,7 @@ That miss is the point of layering: a managed filter is a probabilistic layer, n
 * **Terraform state is local.** Fine for a single-person lab. Use a remote backend with locking for a team.
 * **CI signs in with OIDC, not keys.** The live attack workflow assumes a role through GitHub's OIDC token. The role's trust rule is an exact match on `owner@ownerId/repo@repoId` and the `main` branch, so a renamed or recreated repository cannot assume it. The role can only invoke the one model and apply the one guardrail.
 * **GitHub Actions are pinned to release tags, not commit SHAs.** Dependabot keeps them current. Pinning to SHAs is stricter and is the next hardening step.
-* **Detection of its own limits.** The attack checks are string heuristics, the suite is 13 attacks, and the model is a single model at temperature 0. It shows the defences work against these attacks, not against all attacks.
+* **Detection of its own limits.** The attack checks are string heuristics, the suite is 13 attacks, and the model is a single model at temperature 0. It shows the defences work against these attacks, not against all attacks.     The sample findings are AWS-generated templates, not real attacks, and the injection fixtures are hand-written.
 
 ## Repository layout
 
