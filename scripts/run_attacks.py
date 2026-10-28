@@ -234,6 +234,8 @@ def parse_args(argv=None):
     p.add_argument("--only", help="comma-separated ids, e.g. I1,I4")
     p.add_argument("--dry-run", action="store_true", help="show the plan, make no calls")
     p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
+    p.add_argument("--show", metavar="FILE",
+                   help="print the results table from a saved JSON file and exit (no calls)")
     p.add_argument("--strict", action="store_true",
                    help="exit 4 if any attack succeeded or any run errored (for CI)")
     return p.parse_args(argv)
@@ -241,6 +243,13 @@ def parse_args(argv=None):
 
 def main(argv=None):
     args = parse_args(argv)
+    if args.show:
+        report = json.loads(Path(args.show).read_text())
+        print_table(report)
+        warning = control_warning(report)
+        if warning:
+            print(warning)
+        return 0
     cases = load_cases(args.only)
     calls = len(cases) * args.repeats
 

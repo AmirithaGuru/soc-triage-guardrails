@@ -318,3 +318,15 @@ def test_strict_flag_passes_when_nothing_succeeds(tmp_path, monkeypatch, capsys)
                     "--out", str(tmp_path / "r.json")])
     assert code == 0
     assert "STRICT: PASS" in capsys.readouterr().out
+
+
+def test_show_prints_a_saved_table_and_makes_no_calls(tmp_path, monkeypatch, capsys):
+    def forbidden(version):
+        raise AssertionError("--show must not build the real pipeline")
+    monkeypatch.setattr(ra, "make_real_pipeline", forbidden)
+    report = ra.run_all(ra.load_cases("I1"), _pipeline_returning(GOOD), 2, {"repeats": 2})
+    saved = tmp_path / "r.json"
+    saved.write_text(json.dumps(report))
+    assert ra.main(["--show", str(saved)]) == 0
+    out = capsys.readouterr().out
+    assert "I1" in out and "Succeeded" in out
