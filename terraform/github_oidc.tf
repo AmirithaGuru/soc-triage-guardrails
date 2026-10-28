@@ -12,10 +12,22 @@
 # call the one Claude model and the one guardrail the attack suite needs.
 # ──────────────────────────────────────────────────────────────────────────────
 
-variable "github_repository" {
-  description = "GitHub repository (owner/name) allowed to assume the CI role."
+# GitHub now puts the numeric owner and repository IDs into the OIDC "sub"
+# claim, so the identity looks like:
+#   repo:<owner>@<owner-id>/<repo>@<repo-id>:ref:refs/heads/main
+# Matching on the IDs (not just the names) is the safer choice: if this repo were
+# ever deleted and someone else created one with the same name, it would get new
+# IDs and could NOT assume this role. Find the values in the "sub" line printed
+# by the workflow's debug step, or in the repository's OIDC token claims.
+variable "github_oidc_repo_subject" {
+  description = "Repository part of the GitHub OIDC subject: owner@ownerId/repo@repoId."
   type        = string
-  default     = "AmirithaGuru/soc-triage-guardrails"
+  default     = "AmirithaGuru@149721694/soc-triage-guardrails@1433937637"
+
+  validation {
+    condition     = can(regex("^[A-Za-z0-9-]+@[0-9]+/[A-Za-z0-9._-]+@[0-9]+$", var.github_oidc_repo_subject))
+    error_message = "Use the form owner@123/repo@456 (names with their numeric IDs)."
+  }
 }
 
 # One provider per AWS account for this URL.
@@ -39,8 +51,8 @@ resource "aws_iam_role" "ci" {
         Condition = {
           StringEquals = {
             "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
-            # Exact match, no wildcard: only this repo's main branch.
-            "token.actions.githubusercontent.com:sub" = "repo:${var.github_repository}:ref:refs/heads/main"
+            # Exact match, no wildcard: only this repository (by ID) on its main branch.
+            "token.actions.githubusercontent.com:sub" = "repo:${var.github_oidc_repo_subject}:ref:refs/heads/main"
           }
         }
       }
